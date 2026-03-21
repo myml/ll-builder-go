@@ -20,7 +20,7 @@ type Builder struct {
 	projectYamlFile string
 	workingDir      string
 	internalDir     string
-	localRepo       *repo.LocalOSTreeRepo
+	localRepo       *repo.OSTreeRepo
 	config          *types.BuilderConfig
 	buildOptions    types.BuilderBuildOptions
 	sourceFetcher   *source.Fetcher
@@ -36,7 +36,7 @@ type Builder struct {
 }
 
 // NewBuilder creates a new builder
-func NewBuilder(project *types.BuilderProject, workingDir string, localRepo *repo.LocalOSTreeRepo, cfg *types.BuilderConfig) *Builder {
+func NewBuilder(project *types.BuilderProject, workingDir string, localRepo *repo.OSTreeRepo, cfg *types.BuilderConfig) *Builder {
 	return &Builder{
 		project:       project,
 		workingDir:    workingDir,
@@ -678,9 +678,18 @@ func (b *Builder) Run(modules []string, args []string, debug bool, workdir strin
 			return fmt.Errorf("failed to parse runtime: %w", err)
 		}
 
-		fmt.Printf("Pulling runtime %s binary...\n", runtimeRef.ID)
-		if err := ostreeRepo.Pull(*runtimeRef, "binary"); err != nil {
-			fmt.Printf("Warning: failed to pull runtime binary: %v\n", err)
+		resolvedRuntimeRef, err := ostreeRepo.ResolveVersion(*runtimeRef, "binary")
+		if err != nil {
+			resolvedRuntimeRef = runtimeRef
+		}
+
+		if !ostreeRepo.Exists(*resolvedRuntimeRef, "binary") {
+			fmt.Printf("Pulling runtime %s binary...\n", runtimeRef.ID)
+			if err := ostreeRepo.Pull(*runtimeRef, "binary"); err != nil {
+				fmt.Printf("Warning: failed to pull runtime binary: %v\n", err)
+			}
+		} else {
+			fmt.Printf("Runtime %s binary already exists locally, skipping pull\n", runtimeRef.ID)
 		}
 
 		runtimeBinary, err = ostreeRepo.GetLayerDir(*runtimeRef, "binary")
@@ -691,9 +700,13 @@ func (b *Builder) Run(modules []string, args []string, debug bool, workdir strin
 		}
 
 		if debug {
-			fmt.Printf("Pulling runtime %s develop...\n", runtimeRef.ID)
-			if err := ostreeRepo.Pull(*runtimeRef, "develop"); err != nil {
-				fmt.Printf("Warning: failed to pull runtime develop: %v\n", err)
+			if !ostreeRepo.Exists(*resolvedRuntimeRef, "develop") {
+				fmt.Printf("Pulling runtime %s develop...\n", runtimeRef.ID)
+				if err := ostreeRepo.Pull(*runtimeRef, "develop"); err != nil {
+					fmt.Printf("Warning: failed to pull runtime develop: %v\n", err)
+				}
+			} else {
+				fmt.Printf("Runtime %s develop already exists locally, skipping pull\n", runtimeRef.ID)
 			}
 
 			runtimeDevelop, err = ostreeRepo.GetLayerDir(*runtimeRef, "develop")

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/OpenAtom-Linyaps/linyaps/golang/ll-builder/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -26,7 +27,7 @@ type OSTreeRepo struct {
 
 // NewOSTreeRepo creates a new OSTree repository
 func NewOSTreeRepo(config *types.BuilderConfig) *OSTreeRepo {
-	cacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "linglong-builder", "ostree")
+	cacheDir := filepath.Join(os.Getenv("HOME"), ".cache", "linglong-builder")
 	os.MkdirAll(cacheDir, 0755)
 
 	return &OSTreeRepo{
@@ -64,6 +65,40 @@ func (r *OSTreeRepo) Init() error {
 	}
 
 	return nil
+}
+
+// GetConfig returns the repository configuration
+func (r *OSTreeRepo) GetConfig() *types.BuilderConfig {
+	return r.Config
+}
+
+// SetConfig sets the repository configuration
+func (r *OSTreeRepo) SetConfig(config *types.BuilderConfig) error {
+	r.Config = config
+	configPath := filepath.Join(r.CacheDir, "config.yaml")
+
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.MkdirAll(r.CacheDir, 0755); err != nil {
+		return fmt.Errorf("failed to create repo directory: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	return nil
+}
+
+// GetDefaultRepo returns the default repository name
+func (r *OSTreeRepo) GetDefaultRepo() string {
+	if r.Config != nil && r.Config.DefaultRepo != "" {
+		return r.Config.DefaultRepo
+	}
+	return "stable"
 }
 
 // Pull pulls a package from the repository and checks it out
@@ -289,7 +324,7 @@ func (r *OSTreeRepo) Checkout(ref types.Reference, module, destDir string) error
 }
 
 // GetLayerDir returns the path to a checked out layer
-// The layer is checked out to ~/.cache/linglong-builder/ostree/layers/$commit_id
+// The layer is checked out to ~/.cache/linglong-builder/layers/$commit_id
 func (r *OSTreeRepo) GetLayerDir(ref types.Reference, module string) (string, error) {
 	// Resolve version to get the actual ref
 	resolvedRef, err := r.ResolveVersion(ref, module)
@@ -486,4 +521,32 @@ func (r *OSTreeRepo) ListLocal() ([]types.LayerItem, error) {
 	}
 
 	return items, nil
+}
+
+// Remove removes a layer from the repository
+func (r *OSTreeRepo) Remove(ref types.Reference, module string) error {
+	layerDir := filepath.Join(r.CacheDir, "layers", ref.ID, ref.Version.String(), module)
+	if _, err := os.Stat(layerDir); os.IsNotExist(err) {
+		return fmt.Errorf("layer not found: %s/%s/%s", ref.ID, ref.Version.String(), module)
+	}
+
+	if err := os.RemoveAll(layerDir); err != nil {
+		return fmt.Errorf("failed to remove layer: %w", err)
+	}
+
+	// Remove version directory if empty
+	versionDir := filepath.Join(r.CacheDir, "layers", ref.ID, ref.Version.String())
+	entries, err := os.ReadDir(versionDir)
+	if err == nil && len(entries) == 0 {
+		os.RemoveAll(versionDir)
+	}
+
+	// Remove package directory if empty
+	packageDir := filepath.Join(r.CacheDir, "layers", ref.ID)
+	entries, err = os.ReadDir(packageDir)
+	if err == nil && len(entries) == 0 {
+		os.RemoveAll(packageDir)
+	}
+
+	return nil
 }

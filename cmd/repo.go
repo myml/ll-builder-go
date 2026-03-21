@@ -25,7 +25,7 @@ var repoShowCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		fmt.Printf("Default: %s\n", repoConfig.DefaultRepo)
@@ -62,7 +62,7 @@ var repoAddCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Check if repo already exists
@@ -104,7 +104,7 @@ var repoRemoveCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Check if it's the default repo
@@ -151,7 +151,7 @@ var repoUpdateCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Find and update repo
@@ -189,7 +189,7 @@ var repoSetDefaultCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Check if repo exists
@@ -228,7 +228,7 @@ var repoEnableMirrorCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Find and enable mirror
@@ -267,7 +267,7 @@ var repoDisableMirrorCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 		repoConfig := ostreeRepo.GetConfig()
 
 		// Find and disable mirror

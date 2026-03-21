@@ -26,7 +26,7 @@ var extractCmd = &cobra.Command{
 		}
 
 		// Create repository
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 
 		// Create builder
 		b := builder.NewBuilder(nil, ".", ostreeRepo, cfg)

@@ -48,7 +48,7 @@ var runCmd = &cobra.Command{
 		}
 
 		// Create repository
-		ostreeRepo := repo.NewLocalOSTreeRepo("", cfg)
+		ostreeRepo := repo.NewOSTreeRepo(cfg)
 
 		// Create builder
 		b := builder.NewBuilder(project, filepath.Dir(yamlPath), ostreeRepo, cfg)
