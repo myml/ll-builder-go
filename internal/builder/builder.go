@@ -33,6 +33,8 @@ type Builder struct {
 	installPrefix   string
 	baseBinary      string
 	baseDevelop     string
+	runtimeBinary   string
+	runtimeDevelop  string
 }
 
 // NewBuilder creates a new builder
@@ -296,6 +298,25 @@ func (b *Builder) buildStagePullDependency() error {
 		fmt.Printf("Base develop: %s\n", b.baseDevelop)
 	}
 
+	// Get runtime paths if specified
+	if runtimeRef != nil {
+		b.runtimeBinary, err = ostreeRepo.GetLayerDir(*runtimeRef, "binary")
+		if err != nil {
+			fmt.Printf("Warning: failed to get runtime binary path: %v\n", err)
+			b.runtimeBinary = ""
+		} else {
+			fmt.Printf("Runtime binary: %s\n", b.runtimeBinary)
+		}
+
+		b.runtimeDevelop, err = ostreeRepo.GetLayerDir(*runtimeRef, "develop")
+		if err != nil {
+			fmt.Printf("Warning: failed to get runtime develop path: %v\n", err)
+			b.runtimeDevelop = ""
+		} else {
+			fmt.Printf("Runtime develop: %s\n", b.runtimeDevelop)
+		}
+	}
+
 	return nil
 }
 
@@ -406,6 +427,38 @@ func (b *Builder) buildStageBuild(args []string) error {
 	// Set develop path if available
 	if b.baseDevelop != "" {
 		containerConfig.RuntimePath = &b.baseDevelop
+	}
+
+	// Add runtime mount if available - use overlay to merge binary and develop
+	if b.runtimeBinary != "" {
+		runtimeOverlay, runtimeCleanup, err := container.CreateOverlayRootfs(b.runtimeBinary, b.runtimeDevelop)
+		if err == nil {
+			containerConfig.Mounts = append(containerConfig.Mounts, types.Mount{
+				Destination: "/runtime",
+				Source:      runtimeOverlay,
+				Type:        "bind",
+				Options:     []string{"rbind", "ro"},
+			})
+			defer runtimeCleanup()
+		}
+	}
+
+	// Generate ld.so.conf.d for library paths
+	ldConfDir := filepath.Join(b.internalDir, "cache")
+	os.MkdirAll(ldConfDir, 0755)
+	ldConfPath := filepath.Join(ldConfDir, "zz_deepin-linglong-app.conf")
+	ldConfContent := fmt.Sprintf(`/runtime/lib
+/runtime/lib/x86_64-linux-gnu
+/opt/apps/%s/files/lib
+/opt/apps/%s/files/lib/x86_64-linux-gnu
+`, b.project.Package.ID, b.project.Package.ID)
+	if err := os.WriteFile(ldConfPath, []byte(ldConfContent), 0644); err == nil {
+		containerConfig.Mounts = append(containerConfig.Mounts, types.Mount{
+			Destination: "/etc/ld.so.conf.d/zz_deepin-linglong-app.conf",
+			Source:      ldConfPath,
+			Type:        "bind",
+			Options:     []string{"rbind", "ro"},
+		})
 	}
 
 	// Execute build in container
