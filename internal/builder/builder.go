@@ -83,17 +83,13 @@ package:
   kind: app
   description: |
     %s application
-command: [/opt/apps/%s/files/bin/%s]
-base: org.deepin.base/23.0.0
-sources:
-  - kind: archive
-    url: https://example.com/source.tar.gz
-    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+command: [%s]
+base: org.deepin.base/25.2.1
 build: |
-  # Add your build commands here
   mkdir -p $PREFIX/bin
-  # make && make install PREFIX=$PREFIX
-`, projectName, projectName, projectName, projectName, projectName)
+  echo "echo hello" > $PREFIX/bin/%s
+  chmod +x $PREFIX/bin/%s
+`, projectName, projectName, projectName, projectName, projectName, projectName)
 
 	configPath := filepath.Join(projectDir, "linglong.yaml")
 	if err := os.WriteFile(configPath, []byte(template), 0644); err != nil {
@@ -227,31 +223,61 @@ func (b *Builder) buildStagePullDependency() error {
 	// Create OSTree repo
 	ostreeRepo := repo.NewOSTreeRepo(b.config)
 
+	// Resolve versions first
+	resolvedBaseRef, _ := ostreeRepo.ResolveVersion(*baseRef, "binary")
+	if resolvedBaseRef == nil {
+		resolvedBaseRef = baseRef
+	}
+
+	var resolvedRuntimeRef *types.Reference
+	if runtimeRef != nil {
+		resolvedRuntimeRef, _ = ostreeRepo.ResolveVersion(*runtimeRef, "binary")
+		if resolvedRuntimeRef == nil {
+			resolvedRuntimeRef = runtimeRef
+		}
+	}
+
 	// Pull dependencies if not skipped
 	if !b.buildOptions.SkipPullDepend {
-		// Pull base binary
-		fmt.Printf("Pulling base %s binary...\n", baseRef.ID)
-		if err := ostreeRepo.Pull(*baseRef, "binary"); err != nil {
-			fmt.Printf("Warning: failed to pull base binary: %v\n", err)
-			// Create minimal base layer for testing
-			if err := b.createMinimalBaseLayer(*baseRef, "binary"); err != nil {
-				return fmt.Errorf("failed to create minimal base layer: %w", err)
+		// Pull base binary if not exists locally
+		if !ostreeRepo.Exists(*resolvedBaseRef, "binary") {
+			fmt.Printf("Pulling base %s binary...\n", baseRef.ID)
+			if err := ostreeRepo.Pull(*baseRef, "binary"); err != nil {
+				fmt.Printf("Warning: failed to pull base binary: %v\n", err)
+				// Create minimal base layer for testing
+				if err := b.createMinimalBaseLayer(*baseRef, "binary"); err != nil {
+					return fmt.Errorf("failed to create minimal base layer: %w", err)
+				}
 			}
+		} else {
+			fmt.Printf("Base %s binary already exists locally, skipping pull\n", baseRef.ID)
 		}
 
-		// Pull base develop
-		fmt.Printf("Pulling base %s develop...\n", baseRef.ID)
-		if err := ostreeRepo.Pull(*baseRef, "develop"); err != nil {
-			fmt.Printf("Warning: failed to pull base develop: %v\n", err)
+		// Pull base develop if not exists locally
+		if !ostreeRepo.Exists(*resolvedBaseRef, "develop") {
+			fmt.Printf("Pulling base %s develop...\n", baseRef.ID)
+			if err := ostreeRepo.Pull(*baseRef, "develop"); err != nil {
+				fmt.Printf("Warning: failed to pull base develop: %v\n", err)
+			}
+		} else {
+			fmt.Printf("Base %s develop already exists locally, skipping pull\n", baseRef.ID)
 		}
 
-		// Pull runtime if exists
-		if runtimeRef != nil {
-			fmt.Printf("Pulling runtime %s binary...\n", runtimeRef.ID)
-			ostreeRepo.Pull(*runtimeRef, "binary")
+		// Pull runtime if exists and not exists locally
+		if runtimeRef != nil && resolvedRuntimeRef != nil {
+			if !ostreeRepo.Exists(*resolvedRuntimeRef, "binary") {
+				fmt.Printf("Pulling runtime %s binary...\n", runtimeRef.ID)
+				ostreeRepo.Pull(*runtimeRef, "binary")
+			} else {
+				fmt.Printf("Runtime %s binary already exists locally, skipping pull\n", runtimeRef.ID)
+			}
 
-			fmt.Printf("Pulling runtime %s develop...\n", runtimeRef.ID)
-			ostreeRepo.Pull(*runtimeRef, "develop")
+			if !ostreeRepo.Exists(*resolvedRuntimeRef, "develop") {
+				fmt.Printf("Pulling runtime %s develop...\n", runtimeRef.ID)
+				ostreeRepo.Pull(*runtimeRef, "develop")
+			} else {
+				fmt.Printf("Runtime %s develop already exists locally, skipping pull\n", runtimeRef.ID)
+			}
 		}
 	}
 
@@ -315,8 +341,10 @@ func (b *Builder) buildStageBuild(args []string) error {
 		return fmt.Errorf("failed to generate entry script: %w", err)
 	}
 
-	// Create build output directory
-	b.buildOutput = filepath.Join(b.internalDir, "output", "_build")
+	// Clean and create build output directory
+	outputDir := filepath.Join(b.internalDir, "output")
+	os.RemoveAll(outputDir)
+	b.buildOutput = filepath.Join(outputDir, "_build")
 	if err := os.MkdirAll(b.buildOutput, 0755); err != nil {
 		return fmt.Errorf("failed to create build output directory: %w", err)
 	}
@@ -336,12 +364,6 @@ func (b *Builder) buildStageBuild(args []string) error {
 	// Use base paths from pull dependency stage
 	if b.baseBinary == "" {
 		return fmt.Errorf("base binary path not available")
-	}
-
-	// Create build output directory
-	b.buildOutput = filepath.Join(b.internalDir, "output", "_build")
-	if err := os.MkdirAll(b.buildOutput, 0755); err != nil {
-		return fmt.Errorf("failed to create build output directory: %w", err)
 	}
 
 	// Prepare container configuration
@@ -415,9 +437,9 @@ func (b *Builder) buildStageCommit() error {
 		return fmt.Errorf("failed to generate entries: %w", err)
 	}
 
-	// Commit to local repository
-	if err := b.commitToLocalRepo(); err != nil {
-		return fmt.Errorf("failed to commit to local repo: %w", err)
+	// Generate info.json for each module
+	if err := b.generateInfoJson(); err != nil {
+		return fmt.Errorf("failed to generate info.json: %w", err)
 	}
 
 	return nil
@@ -453,6 +475,24 @@ func (b *Builder) ExportUAB(option types.ExportOption, outputFile string) error 
 		outputFile = b.uabExportFilename(*ref)
 	}
 
+	// Get modules from output directory
+	outputDir := filepath.Join(b.internalDir, "output")
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return fmt.Errorf("failed to read output directory: %w", err)
+	}
+
+	var modules []string
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != "_build" {
+			modules = append(modules, entry.Name())
+		}
+	}
+
+	if len(modules) == 0 {
+		return fmt.Errorf("no modules found in output directory")
+	}
+
 	fmt.Printf("Exporting UAB to %s\n", outputFile)
 	fmt.Printf("Compressor: %s\n", option.Compressor)
 	fmt.Printf("Modules: %v\n", option.Modules)
@@ -476,9 +516,22 @@ func (b *Builder) ExportLayer(option types.ExportOption) error {
 		return err
 	}
 
-	modules := b.localRepo.GetModuleList(*ref)
+	// Get modules from output directory
+	outputDir := filepath.Join(b.internalDir, "output")
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		return fmt.Errorf("failed to read output directory: %w", err)
+	}
+
+	var modules []string
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != "_build" {
+			modules = append(modules, entry.Name())
+		}
+	}
+
 	if len(modules) == 0 {
-		return fmt.Errorf("no modules found for %s", ref.ID)
+		return fmt.Errorf("no modules found in output directory")
 	}
 
 	// Set default compressor
@@ -495,11 +548,7 @@ func (b *Builder) ExportLayer(option types.ExportOption) error {
 			continue
 		}
 
-		layerDir, err := b.localRepo.GetLayerDir(*ref, module)
-		if err != nil {
-			fmt.Printf("Warning: failed to get layer dir for %s: %v\n", module, err)
-			continue
-		}
+		layerDir := filepath.Join(outputDir, module)
 
 		outputFile := filepath.Join(b.workingDir, layer.GetLayerFilename(
 			ref.ID, ref.Version.String(), ref.Arch, module))
@@ -559,18 +608,6 @@ func (b *Builder) ImportLayerDir(layerDir string) error {
 
 	fmt.Println("Layer directory import completed")
 	return nil
-}
-
-// Push pushes the project to remote repository
-func (b *Builder) Push(module, repoURL, repoName string) error {
-	fmt.Printf("Pushing module %s\n", module)
-
-	if b.project == nil {
-		return fmt.Errorf("not under project")
-	}
-
-	// Push is not implemented in Go version
-	return fmt.Errorf("push to remote not implemented yet")
 }
 
 // Run runs the built application
@@ -666,16 +703,14 @@ func (b *Builder) Run(modules []string, args []string, debug bool, workdir strin
 		}
 	}
 
-	// Get app layer path
-	appBinary, err := b.localRepo.GetLayerDir(*ref, "binary")
-	if err != nil {
-		return fmt.Errorf("failed to get app binary: %w", err)
+	// Get app layer path from output directory
+	appBinary := filepath.Join(b.internalDir, "output", "binary")
+	if _, err := os.Stat(appBinary); err != nil {
+		return fmt.Errorf("app binary not found in output directory: %w", err)
 	}
 
 	// Prepare environment variables
 	env := map[string]string{
-		"HOME":     "/home/app",
-		"USER":     "app",
 		"LC_ALL":   "C.UTF-8",
 		"LANGUAGE": "en_US:en",
 	}
@@ -806,6 +841,58 @@ export CXXFLAGS="-g $CFLAGS"
 
 func (b *Builder) generateAppConf() error {
 	// Generate application configuration
+	return nil
+}
+
+func (b *Builder) generateInfoJson() error {
+	ref, err := b.currentReference()
+	if err != nil {
+		return err
+	}
+
+	for _, module := range b.packageModules {
+		moduleOutput := filepath.Join(b.internalDir, "output", module)
+
+		// Create module directory if not exists
+		if err := os.MkdirAll(moduleOutput, 0755); err != nil {
+			return fmt.Errorf("failed to create module directory: %w", err)
+		}
+
+		// Calculate directory size
+		dirSize, err := calculateDirSize(moduleOutput)
+		if err != nil {
+			fmt.Printf("Warning: failed to calculate directory size: %v\n", err)
+			dirSize = 0
+		}
+
+		// Create package info
+		info := types.PackageInfoV2{
+			SchemaVersion:       "1",
+			ID:                  b.project.Package.ID,
+			Name:                b.project.Package.Name,
+			Version:             b.project.Package.Version,
+			Arch:                []string{ref.Arch},
+			Kind:                b.project.Package.Kind,
+			Description:         b.project.Package.Description,
+			Base:                b.project.Base,
+			Runtime:             b.project.Runtime,
+			Command:             b.project.Command,
+			PackageInfoV2Module: module,
+			Size:                dirSize,
+		}
+
+		// Write info.json
+		infoPath := filepath.Join(moduleOutput, "info.json")
+		data, err := json.MarshalIndent(info, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal package info: %w", err)
+		}
+
+		if err := os.WriteFile(infoPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to write info.json: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -972,67 +1059,6 @@ func (b *Builder) generateEntries() error {
 	return nil
 }
 
-func (b *Builder) commitToLocalRepo() error {
-	fmt.Println("Committing to local repository...")
-
-	ref, err := b.currentReference()
-	if err != nil {
-		return err
-	}
-
-	for _, module := range b.packageModules {
-		moduleOutput := filepath.Join(b.internalDir, "output", module)
-
-		// Create module directory if not exists
-		if err := os.MkdirAll(moduleOutput, 0755); err != nil {
-			return fmt.Errorf("failed to create module directory: %w", err)
-		}
-
-		// Calculate directory size
-		dirSize, err := calculateDirSize(moduleOutput)
-		if err != nil {
-			fmt.Printf("Warning: failed to calculate directory size: %v\n", err)
-			dirSize = 0
-		}
-
-		// Create package info
-		info := types.PackageInfoV2{
-			SchemaVersion:       "1",
-			ID:                  b.project.Package.ID,
-			Name:                b.project.Package.Name,
-			Version:             b.project.Package.Version,
-			Arch:                []string{ref.Arch},
-			Kind:                b.project.Package.Kind,
-			Description:         b.project.Package.Description,
-			Base:                b.project.Base,
-			Runtime:             b.project.Runtime,
-			Command:             b.project.Command,
-			PackageInfoV2Module: module,
-			Size:                dirSize,
-		}
-
-		// Write info.json
-		infoPath := filepath.Join(moduleOutput, "info.json")
-		data, err := json.MarshalIndent(info, "", "  ")
-		if err != nil {
-			return fmt.Errorf("failed to marshal package info: %w", err)
-		}
-
-		if err := os.WriteFile(infoPath, data, 0644); err != nil {
-			return fmt.Errorf("failed to write info.json: %w", err)
-		}
-
-		// Import to repository
-		fmt.Printf("Importing %s/%s...\n", ref.ID, module)
-		if err := b.localRepo.ImportLayerDir(moduleOutput); err != nil {
-			return fmt.Errorf("failed to import module %s: %w", module, err)
-		}
-	}
-
-	fmt.Println("Commit completed")
-	return nil
-}
-
 func (b *Builder) printBasicInfo() {
 	fmt.Printf("Package ID: %s\n", b.project.Package.ID)
 	fmt.Printf("Package Name: %s\n", b.project.Package.Name)
@@ -1051,55 +1077,4 @@ func (b *Builder) uabExportFilename(ref types.Reference) string {
 
 func (b *Builder) layerExportFilename(ref types.Reference, module string) string {
 	return layer.GetLayerFilename(ref.ID, ref.Version.String(), ref.Arch, module)
-}
-
-// ListApp lists built applications
-func ListApp(localRepo *repo.LocalOSTreeRepo) error {
-	items, err := localRepo.ListLocal()
-	if err != nil {
-		return fmt.Errorf("failed to list local packages: %w", err)
-	}
-
-	if len(items) == 0 {
-		fmt.Println("No packages found")
-		return nil
-	}
-
-	// Deduplicate and sort
-	refs := make(map[string]bool)
-	for _, item := range items {
-		refs[item.Info.ID+" "+item.Info.Version] = true
-	}
-
-	for ref := range refs {
-		fmt.Println(ref)
-	}
-
-	return nil
-}
-
-// RemoveApp removes built applications
-func RemoveApp(localRepo *repo.LocalOSTreeRepo, refs []string, prune bool) error {
-	for _, refStr := range refs {
-		ref, err := types.ParseReference(refStr)
-		if err != nil {
-			fmt.Printf("Warning: invalid reference %s: %v\n", refStr, err)
-			continue
-		}
-
-		modules := localRepo.GetModuleList(*ref)
-		for _, module := range modules {
-			if err := localRepo.Remove(*ref, module); err != nil {
-				fmt.Printf("Warning: failed to remove %s/%s: %v\n", ref.ID, module, err)
-			}
-		}
-	}
-
-	if prune {
-		if err := localRepo.Prune(); err != nil {
-			fmt.Printf("Warning: failed to prune: %v\n", err)
-		}
-	}
-
-	return nil
 }

@@ -291,19 +291,29 @@ func (r *OSTreeRepo) Checkout(ref types.Reference, module, destDir string) error
 // GetLayerDir returns the path to a checked out layer
 // The layer is checked out to ~/.cache/linglong-builder/ostree/layers/$commit_id
 func (r *OSTreeRepo) GetLayerDir(ref types.Reference, module string) (string, error) {
-	// First, pull if needed (this will resolve the version)
-	if err := r.Pull(ref, module); err != nil {
-		return "", err
-	}
-
 	// Resolve version to get the actual ref
 	resolvedRef, err := r.ResolveVersion(ref, module)
 	if err != nil {
 		resolvedRef = &ref
 	}
 
-	// Get commit ID
+	// Get commit ID (may fail if not pulled yet)
 	commitID, err := r.GetCommitID(*resolvedRef, module)
+	if err == nil {
+		// Check if layer already exists locally
+		layerDir := filepath.Join(r.CacheDir, "layers", commitID)
+		if _, err := os.Stat(layerDir); err == nil {
+			return layerDir, nil
+		}
+	}
+
+	// Pull if not exists locally
+	if err := r.Pull(ref, module); err != nil {
+		return "", err
+	}
+
+	// Get commit ID again after pull
+	commitID, err = r.GetCommitID(*resolvedRef, module)
 	if err != nil {
 		return "", err
 	}

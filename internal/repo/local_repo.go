@@ -229,11 +229,6 @@ func (r *LocalOSTreeRepo) ListLocal() ([]types.LayerItem, error) {
 	return items, nil
 }
 
-// Push pushes a reference and module to the remote repository
-func (r *LocalOSTreeRepo) Push(ref types.Reference, module string) error {
-	return fmt.Errorf("push to remote not implemented")
-}
-
 // MergeModules merges module layers
 func (r *LocalOSTreeRepo) MergeModules() error {
 	return nil
