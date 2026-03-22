@@ -166,7 +166,13 @@ func (r *OSTreeRepo) GetCommitID(ref types.Reference, module string) (string, er
 
 // ResolveVersion resolves a partial version to the latest matching version
 // For example: "23.1.0" -> "23.1.0.3" (if 23.1.0.2 and 23.1.0.3 exist)
+// If version already has 4 parts (Tweak != 0), returns immediately without querying remote.
 func (r *OSTreeRepo) ResolveVersion(ref types.Reference, module string) (*types.Reference, error) {
+	// If version already has 4 parts (tweak specified), no need to resolve
+	if ref.Version.Tweak != 0 {
+		return &ref, nil
+	}
+
 	repoDir := filepath.Join(r.CacheDir, "repo")
 
 	// Initialize if needed
@@ -325,6 +331,7 @@ func (r *OSTreeRepo) Checkout(ref types.Reference, module, destDir string) error
 
 // GetLayerDir returns the path to a checked out layer
 // The layer is checked out to ~/.cache/linglong-builder/layers/$commit_id
+// Note: This function does NOT pull automatically. Call Pull() first if needed.
 func (r *OSTreeRepo) GetLayerDir(ref types.Reference, module string) (string, error) {
 	// Resolve version to get the actual ref
 	resolvedRef, err := r.ResolveVersion(ref, module)
@@ -332,31 +339,16 @@ func (r *OSTreeRepo) GetLayerDir(ref types.Reference, module string) (string, er
 		resolvedRef = &ref
 	}
 
-	// Get commit ID (may fail if not pulled yet)
+	// Get commit ID
 	commitID, err := r.GetCommitID(*resolvedRef, module)
-	if err == nil {
-		// Check if layer already exists locally
-		layerDir := filepath.Join(r.CacheDir, "layers", commitID)
-		if _, err := os.Stat(layerDir); err == nil {
-			return layerDir, nil
-		}
-	}
-
-	// Pull if not exists locally
-	if err := r.Pull(ref, module); err != nil {
-		return "", err
-	}
-
-	// Get commit ID again after pull
-	commitID, err = r.GetCommitID(*resolvedRef, module)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("layer not pulled yet: %w", err)
 	}
 
-	// Return the checkout directory
+	// Check if layer exists locally
 	layerDir := filepath.Join(r.CacheDir, "layers", commitID)
 	if _, err := os.Stat(layerDir); err != nil {
-		return "", fmt.Errorf("layer not found at %s", layerDir)
+		return "", fmt.Errorf("layer not found at %s, please pull first", layerDir)
 	}
 
 	return layerDir, nil

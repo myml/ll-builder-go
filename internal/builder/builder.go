@@ -353,7 +353,7 @@ func (b *Builder) createMinimalBaseLayer(ref types.Reference, module string) err
 func (b *Builder) buildStageBuild(args []string) error {
 	fmt.Println("[Start Build]")
 
-	if args == nil || len(args) == 0 {
+	if len(args) == 0 {
 		args = []string{"/project/linglong/entry.sh"}
 	}
 
@@ -708,6 +708,21 @@ func (b *Builder) Run(modules []string, args []string, debug bool, workdir strin
 		return fmt.Errorf("failed to parse base: %w", err)
 	}
 
+	// Resolve base version and pull if needed
+	resolvedBaseRef, _ := ostreeRepo.ResolveVersion(*baseRef, "binary")
+	if resolvedBaseRef == nil {
+		resolvedBaseRef = baseRef
+	}
+
+	if !ostreeRepo.Exists(*resolvedBaseRef, "binary") {
+		fmt.Printf("Pulling base %s binary...\n", baseRef.ID)
+		if err := ostreeRepo.Pull(*baseRef, "binary"); err != nil {
+			return fmt.Errorf("failed to pull base binary: %w", err)
+		}
+	} else {
+		fmt.Printf("Base %s binary already exists locally, skipping pull\n", baseRef.ID)
+	}
+
 	baseBinary, err := ostreeRepo.GetLayerDir(*baseRef, "binary")
 	if err != nil {
 		return fmt.Errorf("failed to get base binary: %w", err)
@@ -716,6 +731,15 @@ func (b *Builder) Run(modules []string, args []string, debug bool, workdir strin
 
 	baseDevelop := ""
 	if debug {
+		if !ostreeRepo.Exists(*resolvedBaseRef, "develop") {
+			fmt.Printf("Pulling base %s develop...\n", baseRef.ID)
+			if err := ostreeRepo.Pull(*baseRef, "develop"); err != nil {
+				fmt.Printf("Warning: failed to pull base develop: %v\n", err)
+			}
+		} else {
+			fmt.Printf("Base %s develop already exists locally, skipping pull\n", baseRef.ID)
+		}
+
 		baseDevelop, err = ostreeRepo.GetLayerDir(*baseRef, "develop")
 		if err != nil {
 			fmt.Printf("Warning: failed to get base develop: %v\n", err)
